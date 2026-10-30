@@ -113,9 +113,12 @@ class CreditApprovalModel:
     def predict(self, input_dict: dict) -> float:
         input_df = self.prepare_input(input_dict)
         prob = self.model.predict_proba(input_df)[0][1]
-        return round(prob * 100, 2)
+        return float(round(float(prob) * 100, 2))
 
     def get_local_shap(self, input_dict: dict) -> dict:
         input_df = self.prepare_input(input_dict)
         shap_values = self.explainer.shap_values(input_df)
-        return dict(zip(self.feature_names, shap_values[0].tolist()))
+        return {
+            feature: float(value)
+            for feature, value in zip(self.feature_names, shap_values[0])
+        }

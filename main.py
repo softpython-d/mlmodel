@@ -1,4 +1,5 @@
 import os
+import logging
 from typing import Dict, Any
 from fastapi import FastAPI, HTTPException
 from groq import AsyncGroq
@@ -14,6 +15,7 @@ TARGET_COLUMN = "Loan Status"
 SENSITIVE_COLUMN = "Gender"            
 
 app = FastAPI(title="Credit Approval XGBoost API")
+logger = logging.getLogger(__name__)
 groq_client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY", "dummy_key"))
 
 ml_system = CreditApprovalModel(DATASET_FILENAME, TARGET_COLUMN, SENSITIVE_COLUMN)
@@ -54,11 +56,27 @@ async def predict_approval(data: Dict[str, Any]):
     if not ml_system.model:
         raise HTTPException(status_code=500, detail="Model not initialized.")
 
-    # 1. Prediction & SHAP
-    approval_chance = ml_system.predict(data)
-    feature_contributions = ml_system.get_local_shap(data)
+    try:
+        approval_chance = ml_system.predict(data)
+    except Exception as e:
+        logger.exception("Loan approval prediction failed.")
+        raise HTTPException(status_code=500, detail="The model could not evaluate this application.") from e
 
-    # 2. Extract Top 3 most impactful features for the prompt
+    try:
+        feature_contributions = ml_system.get_local_shap(data)
+    except Exception:
+        logger.exception("Prediction succeeded, but local feature explanations could not be generated.")
+        return {
+            "approval_chances_percentage": approval_chance,
+            "prediction_class": "Approved" if approval_chance >= 50 else "Rejected",
+            "local_shap_details": {},
+            "ai_explanation_and_suggestions": (
+                "The approval estimate is available, but a feature explanation could not be generated. "
+                "Please review the estimate alongside the applicant's full circumstances."
+            ),
+        }
+
+    # Extract the most impactful features for the explanation prompt.
     sorted_contributions = sorted(feature_contributions.items(), key=lambda x: abs(x[1]), reverse=True)
     top_features = dict(sorted_contributions[:3])
 
@@ -94,8 +112,9 @@ async def predict_approval(data: Dict[str, Any]):
             max_tokens=400,
         )
         ai_explanation = chat_completion.choices[0].message.content
-    except Exception as e:
-        ai_explanation = f"Groq AI explanation unavailable. Error: {str(e)}"
+    except Exception:
+        logger.exception("Groq explanation unavailable; returning the model prediction and feature contributions.")
+        ai_explanation = "An AI-written explanation is temporarily unavailable. The model estimate and feature contributions are shown."
 
     return {
         "approval_chances_percentage": approval_chance,
