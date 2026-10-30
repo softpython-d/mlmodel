@@ -3,7 +3,7 @@ import logging
 import json
 from typing import Any, Dict
 from fastapi import FastAPI, HTTPException
-from groq import AsyncGroq
+from groq import AsyncGroq, BadRequestError
 
 # Import the model logic
 from model import CreditApprovalModel
@@ -158,19 +158,32 @@ async def predict_approval(data: Dict[str, Any]):
     }
     if groq_client:
         try:
-            chat_completion = await groq_client.chat.completions.create(
-                messages=[
+            request = {
+                "messages": [
                     {
                         "role": "system",
-                        "content": "You explain model outputs clearly and cautiously. Follow the requested JSON format.",
+                        "content": "You explain model outputs clearly and cautiously. Return only valid JSON matching the requested fields.",
                     },
                     {"role": "user", "content": prompt},
                 ],
-                model="openai/gpt-oss-20b",
-                temperature=0.3,
-                max_tokens=500,
-                response_format={"type": "json_object"},
-            )
+                "model": "openai/gpt-oss-20b",
+                "temperature": 0.3,
+                "max_tokens": 500,
+                "response_format": {"type": "json_object"},
+            }
+            try:
+                chat_completion = await groq_client.chat.completions.create(**request)
+            except BadRequestError as error:
+                error_body = error.body if isinstance(error.body, dict) else {}
+                error_details = error_body.get("error", {})
+                if error_details.get("code") != "json_validate_failed":
+                    raise
+                logger.warning(
+                    "Groq rejected constrained JSON output; retrying without response_format."
+                )
+                request.pop("response_format")
+                chat_completion = await groq_client.chat.completions.create(**request)
+
             content = chat_completion.choices[0].message.content
             if content:
                 try:
